@@ -1,6 +1,7 @@
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.preprocessing.image import img_to_array
+from tensorflow.keras.models import load_model
 from tensorflow.keras.utils import to_categorical, plot_model
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import BatchNormalization, Conv2D, MaxPooling2D, Activation, Flatten, Dropout, Dense
@@ -12,10 +13,10 @@ import random
 import cv2
 import os
 import glob
+import cvlib as cv
 
 
 def training():
-    # parameters
     epochs = 100
     lr = 1e-3
     batch_size = 64
@@ -25,10 +26,9 @@ def training():
     labels = []
 
     image_files = [f for f in glob.glob(
-        r'C:\Users\LENOVO\Klasifikasi_wajah\gender_dataset_face' + "/**/*", recursive=True) if not os.path.isdir(f)]
+        r'./assets/gender_dataset_face' + "/**/*", recursive=True) if not os.path.isdir(f)]
     random.shuffle(image_files)
 
-    # convert images to arrays & labelling categories
     for img in image_files:
 
         image = cv2.imread(img)
@@ -43,39 +43,29 @@ def training():
         else:
             label = 0
 
-        labels.append([label])  # [[1], [0], [0], ...]
+        labels.append([label])
 
-    # pre-processing
     data = np.array(data, dtype="float") / 255.0
     labels = np.array(labels)
 
-    # split dataset
     (trainX, testX, trainY, testY) = train_test_split(data, labels, test_size=0.2,
                                                       random_state=42)
 
-    # [[1, 0], [0, 1], [0, 1], ...]
     trainY = to_categorical(trainY, num_classes=2)
     testY = to_categorical(testY, num_classes=2)
 
-    # augmenting datset
     aug = ImageDataGenerator(rotation_range=25, width_shift_range=0.1,
                              height_shift_range=0.1, shear_range=0.2, zoom_range=0.2,
                              horizontal_flip=True, fill_mode="nearest")
-
-    # define model
 
     def build(width, height, depth, classes):
         model = Sequential()
         inputShape = (height, width, depth)
         chanDim = -1
 
-        # Returns a string, either 'channels_first' or 'channels_last'
         if K.image_data_format() == "channels_first":
             inputShape = (depth, height, width)
             chanDim = 1
-
-        # The axis that should be normalized, after a Conv2D layer with data_format="channels_first",
-        # set axis=1 in BatchNormalization.
 
         model.add(Conv2D(32, (3, 3), padding="same", input_shape=inputShape))
         model.add(Activation("relu"))
@@ -114,25 +104,19 @@ def training():
 
         return model
 
-    # build model
     model = build(width=img_dims[0], height=img_dims[1], depth=img_dims[2],
                   classes=2)
 
-    # compile model
-    opt = Adam(lr=lr, decay=lr/epochs)
     model.compile(loss="binary_crossentropy",
-                  optimizer=opt, metrics=["accuracy"])
+                  optimizer='adam', metrics=["accuracy"])
 
-    # train model
-    H = model.fit_generator(aug.flow(trainX, trainY, batch_size=batch_size),
-                            validation_data=(testX, testY),
-                            steps_per_epoch=len(trainX) // batch_size,
-                            epochs=epochs, verbose=1)
+    H = model.fit(aug.flow(trainX, trainY, batch_size=batch_size),
+                  validation_data=(testX, testY),
+                  steps_per_epoch=len(trainX) // batch_size,
+                  epochs=epochs, verbose=1)
 
-    # save model
-    model.save('gender_detection.model')
+    model.save('gender_detection.h5')
 
-    # plot training/validation loss/accuracy
     plt.style.use("ggplot")
     plt.figure()
     N = epochs
@@ -146,5 +130,59 @@ def training():
     plt.ylabel("Loss/accuracy")
     plt.legend(loc="upper right")
 
-    # save plot
     plt.savefig('plot.png')
+
+
+def start():
+    model = load_model('gender_detection.h5')
+
+    webcam = cv2.VideoCapture(0)
+
+    width = 526
+    height = 330
+    webcam.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+    webcam.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+
+    classes = ['man', 'woman']
+
+    while webcam.isOpened():
+        status, frame = webcam.read()
+
+        face, confidence = cv.detect_face(frame)
+
+        for idx, f in enumerate(face):
+
+            (startX, startY) = f[0], f[1]
+            (endX, endY) = f[2], f[3]
+
+            cv2.rectangle(frame, (startX, startY),
+                          (endX, endY), (0, 255, 0), 2)
+
+            face_crop = np.copy(frame[startY:endY, startX:endX])
+
+            face_crop = cv2.resize(face_crop, (96, 96))
+            face_crop = face_crop.astype("float") / 255.0
+            face_crop = img_to_array(face_crop)
+            face_crop = np.expand_dims(face_crop, axis=0)
+
+            conf = model.predict(face_crop)[0]
+
+            idx = np.argmax(conf)
+            label = classes[idx]
+
+            label = "{}: {:.2f}%".format(label, conf[idx] * 100)
+
+            Y = startY - 10 if startY - 10 > 10 else startY + 10
+
+            cv2.putText(frame, label, (startX, Y),  cv2.FONT_HERSHEY_SIMPLEX,
+                        0.7, (0, 255, 0), 2)
+
+        cv2.imshow("Tekan Q untuk Berhenti", frame)
+        cv2.resizeWindow("Tekan Q untuk Berhenti", 526, 330)
+        cv2.moveWindow("Tekan Q untuk Berhenti", 455, 150)
+
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+    webcam.release()
+    cv2.destroyAllWindows()
